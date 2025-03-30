@@ -162,90 +162,134 @@ async function scrapeUrl(url: string): Promise<ScrapedData> {
 
     browser = await puppeteer.launch({
       executablePath,
-      timeout: 120000, // Increase to 2 minutes
+      timeout: 120000, // 2 minutes
       headless: true,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
+        "--disable-features=IsolateOrigins,site-per-process", // Add this to help with frame detachment
+        "--disable-web-security", // Helps with CORS issues
         "--single-process",
         "--no-zygote",
       ],
     });
 
     const page = await browser.newPage();
-
+    
+    // Set user agent to mimic a real browser
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36');
+    
     // Set longer timeouts for page operations
-    await page.setDefaultNavigationTimeout(120000); // 2 minutes
+    await page.setDefaultNavigationTimeout(120000);
     await page.setDefaultTimeout(120000);
 
-    // Navigate with longer timeout and wait for network to be idle
-    await page.goto(url, { 
-      waitUntil: ["networkidle0", "domcontentloaded"], 
-      timeout: 120000 
-    });
+    // Improved error handling for navigation
+    try {
+      // Use a more lenient waitUntil strategy
+      await page.goto(url, { 
+        waitUntil: "domcontentloaded", // Only wait for DOM to load, not for all resources
+        timeout: 60000 // 1 minute timeout
+      });
+      
+      // Add small delay to ensure some content loads
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    } catch (navError) {
+      const errorMessage = navError instanceof Error ? navError.message : 'Unknown navigation error';
+      console.error(`Navigation error: ${errorMessage}`);
+      return {
+        title: "Navigation Failed",
+        content: `Could not access the page content. This might be because the website is blocking automated access or the page no longer exists.`,
+        imageUrl: null
+      };
+    }
 
-    // Add small delay to ensure dynamic content loads
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // Check if page is still valid
+    if (page.isClosed()) {
+      return {
+        title: "Page Closed Unexpectedly",
+        content: "The browser page was closed during navigation. This might be due to website security measures.",
+        imageUrl: null
+      };
+    }
 
-    // Extract title
-    const title = await page.title();
+    // Extract data with try/catch blocks for each operation
+    let title = "No title available";
+    try {
+      title = await page.title();
+    } catch (e) {
+      console.error("Error getting title:", e);
+    }
 
-    // Extract meta images in priority order
-    const metaImage = await page.evaluate(() => {
-      // Priority order for meta images
-      const metaSelectors = [
-        'meta[property="og:image"]',           // Open Graph
-        'meta[name="twitter:image"]',          // Twitter Card
-        'meta[property="og:image:secure_url"]',// Secure OG image
-        'meta[itemprop="image"]',             // Schema.org
-        'link[rel="image_src"]',              // Legacy
-        'link[rel="icon"]',                   // Favicon as last resort
-      ];
+    let metaImage = null;
+    try {
+      metaImage = await page.evaluate(() => {
+        const metaSelectors = [
+          'meta[property="og:image"]',
+          'meta[name="twitter:image"]',
+          'meta[property="og:image:secure_url"]',
+          'meta[itemprop="image"]',
+          'link[rel="image_src"]',
+          'link[rel="icon"]',
+        ];
 
-      for (const selector of metaSelectors) {
-        const element = document.querySelector(selector);
-        const content = element?.getAttribute('content') || element?.getAttribute('href');
-        if (content) return content;
-      }
-      return null;
-    });
+        for (const selector of metaSelectors) {
+          const element = document.querySelector(selector);
+          const content = element?.getAttribute('content') || element?.getAttribute('href');
+          if (content) return content;
+        }
+        return null;
+      });
+    } catch (e) {
+      console.error("Error extracting meta image:", e);
+    }
 
     // Make URL absolute and validate
     const imageUrl = metaImage ? new URL(metaImage, url).toString() : null;
     const finalImageUrl = isValidImageUrl(imageUrl) ? imageUrl : null;
 
-    // Extract content
-    const content = await page.evaluate(() => {
-      const paragraphs = Array.from(document.querySelectorAll("p")).map(
-        (p) => p.textContent
-      );
-      const headings = Array.from(document.querySelectorAll("h1, h2, h3")).map(
-        (h) => h.textContent
-      );
-      return [...headings, ...paragraphs].filter(Boolean).join(" ").trim();
-    });
+    // Extract content with error handling
+    let content = "Failed to extract content from page";
+    try {
+      content = await page.evaluate(() => {
+        const paragraphs = Array.from(document.querySelectorAll("p")).map(
+          (p) => p.textContent
+        );
+        const headings = Array.from(document.querySelectorAll("h1, h2, h3")).map(
+          (h) => h.textContent
+        );
+        return [...headings, ...paragraphs].filter(Boolean).join(" ").trim();
+      });
+    } catch (e) {
+      console.error("Error extracting content:", e);
+    }
 
     return { title, content, imageUrl: finalImageUrl };
   } catch (error) {
     console.error("Error scraping URL:", error);
-    if (error instanceof Error && error.message.includes('timeout')) {
-      return {
-        title: "Scraping Failed - Timeout",
-        content: "The page took too long to load. This might be due to slow connection or complex page content.",
-        imageUrl: null
-      };
-    }
     if (error instanceof Error) {
+      if (error.message.includes('timeout')) {
+        return {
+          title: "Scraping Failed - Timeout",
+          content: "The page took too long to load. This might be due to slow connection or complex page content.",
+          imageUrl: null
+        };
+      }
+      if (error.message.includes('detached')) {
+        return {
+          title: "Scraping Failed - Page Detached",
+          content: "The website may be using anti-scraping measures or redirects that prevent automated access. Try visiting the URL directly in your browser.",
+          imageUrl: null
+        };
+      }
       console.error(error.stack);
     } else {
       console.error("An unknown error occurred:", error);
     }
     return {
       title: "Failed to scrape",
-      content: `Error: ${
-        error instanceof Error ? error.message : "Unknown error"
-      }`, imageUrl: null
+      content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      imageUrl: null
     };
   } finally {
     if (browser) {
