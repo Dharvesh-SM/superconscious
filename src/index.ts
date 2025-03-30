@@ -142,7 +142,6 @@ function isValidImageUrl(url: string | null): boolean {
 }
 
 // Function to scrape URL content
-
 async function scrapeUrl(url: string): Promise<ScrapedData> {
   let browser;
   try {
@@ -151,27 +150,54 @@ async function scrapeUrl(url: string): Promise<ScrapedData> {
       `Puppeteer package version: ${require("puppeteer/package.json").version}`
     );
 
+    // For local development, we'll prioritize finding an installed Chrome
     let executablePath;
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-      executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-      console.log(`Using Chrome at: ${executablePath}`);
-    } else {
-      executablePath = puppeteer.executablePath();
-      console.log(`Using bundled Chrome at: ${executablePath}`);
+    if (process.env.NODE_ENV === 'development' && process.platform === 'win32') {
+      // Common Chrome paths on Windows
+      const possiblePaths = [
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        process.env.LOCALAPPDATA + '\\Google\\Chrome\\Application\\chrome.exe'
+      ];
+      
+      // Use the first path that exists
+      for (const path of possiblePaths) {
+        try {
+          if (require('fs').existsSync(path)) {
+            executablePath = path;
+            console.log(`Using local Chrome at: ${executablePath}`);
+            break;
+          }
+        } catch (e) {
+          // Continue to next path
+        }
+      }
+    }
+    
+    // Fall back to environment variable or Puppeteer's bundled Chrome
+    if (!executablePath) {
+      if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+        executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+        console.log(`Using Chrome at: ${executablePath}`);
+      } else {
+        executablePath = puppeteer.executablePath();
+        console.log(`Using bundled Chrome at: ${executablePath}`);
+      }
     }
 
+    // Launch browser with appropriate settings for local development
     browser = await puppeteer.launch({
       executablePath,
       timeout: 120000, // 2 minutes
-      headless: true,
+      headless: process.env.NODE_ENV === 'production', // Use non-headless for local debugging
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
-        "--disable-features=IsolateOrigins,site-per-process", // Add this to help with frame detachment
-        "--disable-web-security", // Helps with CORS issues
-        "--single-process",
-        "--no-zygote",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-web-security",
+        // Only use these args in production
+        ...(process.env.NODE_ENV === 'production' ? ["--single-process", "--no-zygote"] : []),
       ],
     });
 
