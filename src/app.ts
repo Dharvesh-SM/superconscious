@@ -1,5 +1,7 @@
 import express from "express";
 import cors from "cors";
+import passport from "passport";
+import "./config/passport";
 import authRoutes from "./routes/authRoutes";
 import contentRoutes from "./routes/contentRoutes";
 import searchRoutes from "./routes/searchRoutes";
@@ -27,6 +29,9 @@ app.use(cors({
 }));
 
 app.use(express.json());
+
+// Initialize Passport - fix type compatibility issue
+app.use(passport.initialize() as unknown as express.RequestHandler);
 
 app.get("/", (_req, res) => {
   res.send("server health check - conscious running!");

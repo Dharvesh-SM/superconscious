@@ -1,8 +1,9 @@
-import { Request, Response } from "express";
+import { Request, Response, NextFunction } from "express";
 import { UserModel } from "../models";
 import { signupSchema, signinSchema } from "../utils/validation";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
+import passport from "passport";
 
 export const signup = async (req: Request, res: Response): Promise<void> => {
   const validInput = signupSchema.safeParse(req.body);
@@ -73,5 +74,51 @@ export const signin = async (req: Request, res: Response): Promise<void> => {
     console.error("Signin error:", error);
     res.status(500).json({ message: "Internal server error" });
   }
+}
 
+// Google Authentication
+export const googleAuth = passport.authenticate('google', { scope: ['profile', 'email'] });
+
+export const googleAuthCallback = (req: Request, res: Response, next: NextFunction): void => {
+  passport.authenticate('google', { session: false }, (err: Error, user: any) => {
+    if (err) {
+      console.error('Google authentication error:', err);
+      return res.redirect(`${process.env.FRONTEND_URL}/Signin?error=${encodeURIComponent('Google authentication failed: ' + err.message)}`);
+    }
+    
+    if (!user) {
+      console.error('Google authentication failed: No user returned');
+      return res.redirect(`${process.env.FRONTEND_URL}/Signin?error=No user found`);
+    }
+    
+    const token = jwt.sign(
+      { id: user._id },
+      process.env.JWT_SECRET || '',
+      { expiresIn: "7days" }
+    );
+    
+    // Redirect to frontend with token and username
+    return res.redirect(`${process.env.FRONTEND_URL}/auth-callback?token=${token}&username=${user.username}`);
+  })(req, res, next);
+};
+
+// Get current user
+export const getCurrentUser = async (req: Request, res: Response): Promise<void> => {
+  try {
+    if (!req.userId) {
+      res.status(401).json({ message: "Not authenticated" });
+      return;
+    }
+    
+    const user = await UserModel.findById(req.userId).select('-password');
+    if (!user) {
+      res.status(404).json({ message: "User not found" });
+      return;
+    }
+    
+    res.status(200).json({ user });
+  } catch (error) {
+    console.error("Get current user error:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
 }
